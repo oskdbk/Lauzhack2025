@@ -1,4 +1,7 @@
 <resources>
     <string name="app_name">ticket application</string>
-    <string name="servicedesc">Digital Ticket Service</string><string name="aiddescription">NFC ticketing application</string>
+    <string name="servicedesc">Digital Ticket Service</string>
+    <string name="aiddescription">NFC ticketing application</string>
+    <string name="header_title">Event Tickets</string>
+    <string name="your_tickets">Your Tickets</string>
 </resources>

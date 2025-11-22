@@ -128,6 +128,9 @@ object TicketStorage {
     var message: String by mutableStateOf("Welcome — demo mock ticket app")
     var isScanning by mutableStateOf(false)
     var scanResult: String? by mutableStateOf(null)
+
+    // new state to toggle tickets screen
+    var showingTickets by mutableStateOf(false)
 }
 
 // ------------------- MainActivity -------------------
@@ -208,10 +211,11 @@ fun ScanningScreen(activity: Activity) {
 fun TicketingScreen(activity: Activity) {
     if (TicketStorage.isScanning) {
         ScanningScreen(activity)
+    } else if (TicketStorage.showingTickets) {
+        TicketsScreen(activity)
     } else {
         val scope = rememberCoroutineScope()
         val types = remember { TicketStorage.availableTypes }
-        val owned = TicketStorage.owned
 
         if (TicketStorage.scanResult != null) {
             AlertDialog(
@@ -241,7 +245,7 @@ fun TicketingScreen(activity: Activity) {
                             Button(onClick = {
                                 val uid = UUID.randomUUID().toString()
                                 val ot = OwnedTicket(uid, t, System.currentTimeMillis())
-                                owned.add(ot)
+                                TicketStorage.owned.add(ot)
                                 TicketStorage.message = "Bought ${t.title} (uid=$uid)"
                             }) { Text("Buy") }
                         }
@@ -250,39 +254,84 @@ fun TicketingScreen(activity: Activity) {
             }
 
             Divider()
-            Text("Owned tickets:")
-            Column(modifier = Modifier.fillMaxWidth()) {
-                for (ot in owned) {
-                    Row(modifier = Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(ot.type.title)
-                            Text("Bought: ${dateString(ot.boughtAt)}", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Button(onClick = {
-                            scope.launch {
-                                val signed = activateTicket(ot)
-                                TicketStorage.activeSignedToken = signed
-                                TicketStorage.message = "Activated ${ot.type.title} — tap phone to present NFC"
-                            }
-                        }) { Text("Activate") }
-                    }
-                }
-            }
+            Spacer(Modifier.height(8.dp))
+
+            // removed inline owned tickets list from main screen per request
 
             Spacer(Modifier.height(10.dp))
             Text(TicketStorage.message)
             Spacer(Modifier.height(6.dp))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { TicketStorage.message = "Issuer pubkey (base64): ${DemoIssuer.publicKeyBase64()}" }) {
-                    Text("Show issuer pubkey")
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    modifier = Modifier.weight(1f).height(40.dp),
+                    onClick = { TicketStorage.message = "Issuer pubkey (base64): ${DemoIssuer.publicKeyBase64()}" }
+                ) {
+                    Text("Show issuer pubkey", style = MaterialTheme.typography.bodySmall)
                 }
-                Button(onClick = {
-                    TicketStorage.isScanning = true
-                    TicketStorage.message = "Ready to scan another device."
-                }) { Text("Verify active token") }
+                Button(
+                    modifier = Modifier.weight(1f).height(40.dp),
+                    onClick = {
+                        TicketStorage.isScanning = true
+                        TicketStorage.message = "Ready to scan another device."
+                    }
+                ) {
+                    Text("Verify active token", style = MaterialTheme.typography.bodySmall)
+                }
+                Button(
+                    modifier = Modifier.weight(1f).height(40.dp),
+                    onClick = { TicketStorage.showingTickets = true }
+                ) {
+                    Text("Tickets", style = MaterialTheme.typography.bodySmall)
+                }
             }
             Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+fun TicketsScreen(activity: Activity) {
+    val owned = TicketStorage.owned
+    val scope = rememberCoroutineScope()
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(onClick = { TicketStorage.showingTickets = false }) {
+                Text("Cancel")
+            }
+            Spacer(Modifier.width(12.dp))
+            Text("Owned tickets", style = MaterialTheme.typography.titleLarge)
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        if (owned.isEmpty()) {
+            Text("No purchased tickets yet.")
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(owned) { ot ->
+                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(ot.type.title)
+                                Text("Bought: ${dateString(ot.boughtAt)}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Button(onClick = {
+                                scope.launch {
+                                    val signed = activateTicket(ot)
+                                    TicketStorage.activeSignedToken = signed
+                                    TicketStorage.message = "Activated ${ot.type.title} — tap phone to present NFC"
+                                }
+                            }) { Text("Activate") }
+                        }
+                    }
+                }
+            }
         }
     }
 }
