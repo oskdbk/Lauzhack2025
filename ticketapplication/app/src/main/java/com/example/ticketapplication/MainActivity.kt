@@ -5,6 +5,7 @@ import android.nfc.NfcAdapter
 import android.nfc.tech.Ndef
 import android.nfc.NdefMessage
 import android.nfc.NdefRecord
+import android.nfc.NfcEvent
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -130,7 +131,7 @@ object TicketStorage {
 }
 
 // ------------------- MainActivity -------------------
-class MainActivity : ComponentActivity() {
+class MainActivity : ComponentActivity(), NfcAdapter.CreateNdefMessageCallback {
 
     private lateinit var nfcAdapter: NfcAdapter
 
@@ -148,40 +149,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Reader mode is now managed in the ScanningScreen composable
     override fun onResume() {
         super.onResume()
-        nfcAdapter?.let { adapter ->
-            val options = Bundle()
-            adapter.enableReaderMode(
-                this,
-                { tag ->
-                    // Read NDEF
-                    val ndef = Ndef.get(tag)
-                    ndef?.let {
-                        it.connect()
-                        val msg = it.ndefMessage
-                        val payload = msg.records.firstOrNull()?.payload
-                        payload?.let { bytes ->
-                            val token = String(bytes, StandardCharsets.UTF_8)
-                            Log.d("LausanneMock", "Scanned token: $token")
-                            val verified = verifyTokenString(token)
-                            runOnUiThread {
-                                TicketStorage.message = if (verified) "Scanned token: OK" else "Scanned token: FAILED"
-                                TicketStorage.isScanning = false
-                            }
-                        }
-                        it.close()
-                    }
-                },
-                NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B,
-                options
-            )
-        }
     }
 
     override fun onPause() {
         super.onPause()
-        nfcAdapter?.disableReaderMode(this)
+    }
+
+    override fun createNdefMessage(event: NfcEvent): NdefMessage? {
+        return createNdefMessageFromActiveToken()
     }
 
     // For demo, create NDEF message from active token
@@ -196,7 +174,42 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun ScanningScreen() {
+fun ScanningScreen(activity: Activity) {
+    val nfcAdapter = remember { NfcAdapter.getDefaultAdapter(activity) }
+
+    DisposableEffect(Unit) {
+        val readerCallback = NfcAdapter.ReaderCallback { tag ->
+            val ndef = Ndef.get(tag)
+            ndef?.let {
+                it.connect()
+                val msg = it.ndefMessage
+                val payload = msg.records.firstOrNull()?.payload
+                payload?.let { bytes ->
+                    val token = String(bytes, StandardCharsets.UTF_8)
+                    Log.d("LausanneMock", "Scanned token: $token")
+                    val verified = verifyTokenString(token)
+                    activity.runOnUiThread {
+                        TicketStorage.message = if (verified) "Scanned token: OK" else "Scanned token: FAILED"
+                        TicketStorage.isScanning = false
+                    }
+                }
+                it.close()
+            }
+        }
+
+        val options = Bundle()
+        nfcAdapter?.enableReaderMode(
+            activity,
+            readerCallback,
+            NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B,
+            options
+        )
+
+        onDispose {
+            nfcAdapter?.disableReaderMode(activity)
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.Center,
@@ -219,7 +232,7 @@ fun ScanningScreen() {
 @Composable
 fun TicketingScreen(activity: Activity) {
     if (TicketStorage.isScanning) {
-        ScanningScreen()
+        ScanningScreen(activity)
     } else {
         val scope = rememberCoroutineScope()
         val types = remember { TicketStorage.availableTypes }
