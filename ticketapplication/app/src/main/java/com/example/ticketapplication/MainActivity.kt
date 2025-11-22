@@ -12,6 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Divider
+import androidx.compose.material3.CircularProgressIndicator
 
 import android.os.Bundle
 import android.util.Base64
@@ -124,6 +125,8 @@ object TicketStorage {
 
     val owned = mutableStateListOf<OwnedTicket>()
     var activeSignedToken: String? by mutableStateOf(null)
+    var message: String by mutableStateOf("Welcome — demo mock ticket app")
+    var isScanning by mutableStateOf(false)
 }
 
 // ------------------- MainActivity -------------------
@@ -161,6 +164,11 @@ class MainActivity : ComponentActivity() {
                         payload?.let { bytes ->
                             val token = String(bytes, StandardCharsets.UTF_8)
                             Log.d("LausanneMock", "Scanned token: $token")
+                            val verified = verifyTokenString(token)
+                            runOnUiThread {
+                                TicketStorage.message = if (verified) "Scanned token: OK" else "Scanned token: FAILED"
+                                TicketStorage.isScanning = false
+                            }
                         }
                         it.close()
                     }
@@ -187,72 +195,94 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Composable
+fun ScanningScreen() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("Waiting to scan...", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(20.dp))
+        CircularProgressIndicator()
+        Spacer(Modifier.height(20.dp))
+        Button(onClick = {
+            TicketStorage.isScanning = false
+            TicketStorage.message = "Scan cancelled."
+        }) {
+            Text("Cancel")
+        }
+    }
+}
 
 // ------------------- UI -------------------
 @Composable
 fun TicketingScreen(activity: Activity) {
-    val scope = rememberCoroutineScope()
-    val types = remember { TicketStorage.availableTypes }
-    var message by remember { mutableStateOf("Welcome — demo mock ticket app") }
-    val owned = TicketStorage.owned
+    if (TicketStorage.isScanning) {
+        ScanningScreen()
+    } else {
+        val scope = rememberCoroutineScope()
+        val types = remember { TicketStorage.availableTypes }
+        val owned = TicketStorage.owned
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Lausanne Mock Ticket Store", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(12.dp))
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            Text("Lausanne Mock Ticket Store", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(12.dp))
 
-        LazyColumn(modifier = Modifier.weight(1f)) {
-            items(types) { t ->
-                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                items(types) { t ->
+                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(t.title)
+                                Text(t.zones, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Button(onClick = {
+                                val uid = UUID.randomUUID().toString()
+                                val ot = OwnedTicket(uid, t, System.currentTimeMillis())
+                                owned.add(ot)
+                                TicketStorage.message = "Bought ${t.title} (uid=$uid)"
+                            }) { Text("Buy") }
+                        }
+                    }
+                }
+            }
+
+            Divider()
+            Text("Owned tickets:")
+            Column(modifier = Modifier.fillMaxWidth()) {
+                for (ot in owned) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(t.title)
-                            Text(t.zones, style = MaterialTheme.typography.bodySmall)
+                            Text(ot.type.title)
+                            Text("Bought: ${dateString(ot.boughtAt)}", style = MaterialTheme.typography.bodySmall)
                         }
                         Button(onClick = {
-                            val uid = UUID.randomUUID().toString()
-                            val ot = OwnedTicket(uid, t, System.currentTimeMillis())
-                            owned.add(ot)
-                            message = "Bought ${t.title} (uid=$uid)"
-                        }) { Text("Buy") }
+                            scope.launch {
+                                val signed = activateTicket(ot)
+                                TicketStorage.activeSignedToken = signed
+                                TicketStorage.message = "Activated ${ot.type.title} — tap phone to present NFC"
+                            }
+                        }) { Text("Activate") }
                     }
                 }
             }
-        }
 
-        Divider()
-        Text("Owned tickets:")
-        Column(modifier = Modifier.fillMaxWidth()) {
-            for (ot in owned) {
-                Row(modifier = Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(ot.type.title)
-                        Text("Bought: ${dateString(ot.boughtAt)}", style = MaterialTheme.typography.bodySmall)
-                    }
-                    Button(onClick = {
-                        scope.launch {
-                            val signed = activateTicket(ot)
-                            TicketStorage.activeSignedToken = signed
-                            message = "Activated ${ot.type.title} — tap phone to present NFC"
-                        }
-                    }) { Text("Activate") }
+            Spacer(Modifier.height(10.dp))
+            Text(TicketStorage.message)
+            Spacer(Modifier.height(6.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { TicketStorage.message = "Issuer pubkey (base64): ${DemoIssuer.publicKeyBase64()}" }) {
+                    Text("Show issuer pubkey")
                 }
+                Button(onClick = {
+                    TicketStorage.isScanning = true
+                    TicketStorage.message = "Ready to scan another device."
+                }) { Text("Verify active token") }
             }
+            Spacer(Modifier.height(12.dp))
         }
-
-        Spacer(Modifier.height(10.dp))
-        Text(message)
-        Spacer(Modifier.height(6.dp))
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { message = "Issuer pubkey (base64): ${DemoIssuer.publicKeyBase64()}" }) {
-                Text("Show issuer pubkey")
-            }
-            Button(onClick = {
-                val tok = TicketStorage.activeSignedToken
-                message = if (tok != null && verifyTokenString(tok)) "Token verification: OK" else "Token verification: FAILED"
-            }) { Text("Verify active token") }
-        }
-        Spacer(Modifier.height(12.dp))
     }
 }
 
