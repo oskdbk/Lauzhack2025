@@ -4,8 +4,6 @@ import android.app.Activity
 import android.nfc.NfcAdapter
 import android.nfc.tech.Ndef
 import android.nfc.NdefMessage
-import android.nfc.NdefRecord
-import android.nfc.NfcEvent
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -133,14 +131,10 @@ object TicketStorage {
 }
 
 // ------------------- MainActivity -------------------
-class MainActivity : ComponentActivity(), NfcAdapter.CreateNdefMessageCallback {
-
-    private lateinit var nfcAdapter: NfcAdapter
+class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        nfcAdapter = NfcAdapter.getDefaultAdapter(this)
 
         setContent {
             MaterialTheme {
@@ -149,29 +143,6 @@ class MainActivity : ComponentActivity(), NfcAdapter.CreateNdefMessageCallback {
                 }
             }
         }
-    }
-
-    // Reader mode is now managed in the ScanningScreen composable
-    override fun onResume() {
-        super.onResume()
-    }
-
-    override fun onPause() {
-        super.onPause()
-    }
-
-    override fun createNdefMessage(event: NfcEvent): NdefMessage? {
-        return createNdefMessageFromActiveToken()
-    }
-
-    // For demo, create NDEF message from active token
-    fun createNdefMessageFromActiveToken(): NdefMessage? {
-        val active = TicketStorage.activeSignedToken ?: return null
-        val record = NdefRecord.createMime(
-            "application/vnd.example.lausanne.ticket",
-            active.toByteArray(StandardCharsets.UTF_8)
-        )
-        return NdefMessage(arrayOf(record))
     }
 }
 
