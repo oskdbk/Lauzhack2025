@@ -39,7 +39,6 @@ object BackendApi {
     private val db by lazy { FirebaseFirestore.getInstance() }
 
     fun registerTicketInDb(ticket: OwnedTicket) {
-        // Create a map of data to save
         val ticketData = hashMapOf(
             "uid" to ticket.uid,
             "type" to ticket.type.id,
@@ -47,7 +46,6 @@ object BackendApi {
             "isValid" to true
         )
 
-        // Write to collection "tickets" with ID = ticket.uid
         db.collection("tickets").document(ticket.uid)
             .set(ticketData)
             .addOnSuccessListener {
@@ -68,18 +66,18 @@ object BackendApi {
 
             Log.d("Firebase", "Checking database for ID: $ticketId")
 
-            // 2. Ask Firestore for the document synchronously (blocking)
-            // We use Tasks.await because we are already on a background thread (NFC Reader)
+            // 2. Ask Firestore for the document
             val docRef = db.collection("tickets").document(ticketId)
             val snapshot = Tasks.await(docRef.get())
 
+            // 3. COMPARE DATA: Check if ID exists AND if ticket is marked valid
             if (snapshot.exists()) {
-                Log.d("Firebase", "Document found: ${snapshot.data}")
-                // You could also check a field like if(snapshot.getBoolean("isValid") == true)
-                true
+                val isValidInDb = snapshot.getBoolean("isValid") ?: false
+                Log.d("Firebase", "Document found. Valid? $isValidInDb")
+                return isValidInDb
             } else {
-                Log.d("Firebase", "No such document exists")
-                false
+                Log.d("Firebase", "No such document exists (Fake ID)")
+                return false
             }
         } catch (e: Exception) {
             Log.e("Firebase", "Validation failed", e)
@@ -210,7 +208,7 @@ class MainActivity : ComponentActivity() {
                                     if (isValid) {
                                         Toast.makeText(this, "✅ VALID TICKET (Found in Firebase)", Toast.LENGTH_LONG).show()
                                     } else {
-                                        Toast.makeText(this, "❌ INVALID (Not in DB)", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(this, "❌ INVALID (Not in DB or Invalid)", Toast.LENGTH_LONG).show()
                                     }
                                 }
                             }
