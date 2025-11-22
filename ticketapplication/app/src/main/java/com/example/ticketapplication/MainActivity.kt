@@ -40,7 +40,8 @@ import android.security.keystore.KeyProperties
 
 // ------------------- Models -------------------
 data class TicketType(val id: String, val title: String, val durationMinutes: Int, val zones: String)
-data class OwnedTicket(val uid: String, val type: TicketType, val boughtAt: Long, var isActive: Boolean = false)
+// added isUsed to track tickets that were previously active
+data class OwnedTicket(val uid: String, val type: TicketType, val boughtAt: Long, var isActive: Boolean = false, var isUsed: Boolean = false)
 
 // ------------------- Device Keys (Hybrid Binding) -------------------
 object DeviceKeys {
@@ -114,6 +115,30 @@ fun verifyPayload(publicKeyBytes: ByteArray, payload: ByteArray, signature: Byte
     }
 }
 
+// parse token and return payload JSONObject if signature/validity OK, else null
+fun parseAndVerifyToken(token: String): JSONObject? {
+    return try {
+        val obj = JSONObject(token)
+        val payloadB = Base64.decode(obj.getString("payload"), Base64.NO_WRAP)
+        val sigB = Base64.decode(obj.getString("signature"), Base64.NO_WRAP)
+        val pubB = Base64.decode(obj.getString("issuerPub"), Base64.NO_WRAP)
+
+        val p = JSONObject(String(payloadB, StandardCharsets.UTF_8))
+        if (System.currentTimeMillis() > p.getLong("validUntil")) return null
+
+        if (!verifyPayload(pubB, payloadB, sigB)) return null
+        p
+    } catch (e: Exception) {
+        Log.e("LausanneMock", "parse/verify err", e)
+        null
+    }
+}
+
+// backward-compatible boolean verifier
+fun verifyTokenString(token: String): Boolean {
+    return parseAndVerifyToken(token) != null
+}
+
 // ------------------- Storage -------------------
 object TicketStorage {
     val availableTypes = listOf(
@@ -125,6 +150,9 @@ object TicketStorage {
 
     val owned = mutableStateListOf<OwnedTicket>()
     var activeSignedToken: String? by mutableStateOf(null)
+    var activeTicketUid: String? by mutableStateOf(null)
+    var activeTicketPayload: String? by mutableStateOf(null) // pretty JSON of payload
+    var activeTicketIssuedAt: Long? by mutableStateOf(null)
     var message: String by mutableStateOf("Welcome — demo mock ticket app")
     var isScanning by mutableStateOf(false)
     var scanResult: String? by mutableStateOf(null)
@@ -163,11 +191,17 @@ fun ScanningScreen(activity: Activity) {
                 payload?.let { bytes ->
                     val token = String(bytes, StandardCharsets.UTF_8)
                     Log.d("LausanneMock", "Scanned token: $token")
-                    val verified = verifyTokenString(token)
+
+                    val parsed = parseAndVerifyToken(token)
                     activity.runOnUiThread {
-                        val result = if (verified) "OK" else "FAILED"
-                        TicketStorage.message = "Scanned token: $result"
-                        TicketStorage.scanResult = result
+                        if (parsed != null) {
+                            // show full payload in the UI
+                            TicketStorage.scanResult = parsed.toString(2)
+                            TicketStorage.message = "Scanned token: OK"
+                        } else {
+                            TicketStorage.scanResult = null
+                            TicketStorage.message = "Scanned token: FAILED"
+                        }
                         TicketStorage.isScanning = false
                     }
                 }
@@ -221,7 +255,7 @@ fun TicketingScreen(activity: Activity) {
             AlertDialog(
                 onDismissRequest = { TicketStorage.scanResult = null },
                 title = { Text("Scan Result") },
-                text = { Text("Token verification: ${TicketStorage.scanResult}") },
+                text = { Text("Token details:\n${TicketStorage.scanResult}") },
                 confirmButton = {
                     Button(onClick = { TicketStorage.scanResult = null }) {
                         Text("Dismiss")
@@ -321,13 +355,41 @@ fun TicketsScreen(activity: Activity) {
                                 Text(ot.type.title)
                                 Text("Bought: ${dateString(ot.boughtAt)}", style = MaterialTheme.typography.bodySmall)
                             }
-                            Button(onClick = {
-                                scope.launch {
-                                    val signed = activateTicket(ot)
-                                    TicketStorage.activeSignedToken = signed
-                                    TicketStorage.message = "Activated ${ot.type.title} — tap phone to present NFC"
-                                }
-                            }) { Text("Activate") }
+                            // Button behavior: Active / Used / Activate
+                            if (ot.isActive) {
+                                Button(onClick = {}, enabled = false) { Text("Active") }
+                            } else if (ot.isUsed) {
+                                Button(onClick = {}, enabled = false) { Text("Used") }
+                            } else {
+                                Button(onClick = {
+                                    scope.launch {
+                                        // mark previous active as used
+                                        val prev = owned.find { it.isActive }
+                                        prev?.let { it.isActive = false; it.isUsed = true }
+
+                                        // set this as active
+                                        ot.isActive = true
+                                        ot.isUsed = false
+
+                                        // generate signed token and store active info
+                                        val signed = activateTicket(ot)
+                                        TicketStorage.activeSignedToken = signed
+                                        TicketStorage.activeTicketUid = ot.uid
+
+                                        // store pretty payload extracted from signed token
+                                        try {
+                                            val parsed = parseAndVerifyToken(signed)
+                                            TicketStorage.activeTicketPayload = parsed?.toString(2)
+                                            TicketStorage.activeTicketIssuedAt = parsed?.optLong("issuedAt")
+                                        } catch (_: Exception) {
+                                            TicketStorage.activeTicketPayload = null
+                                            TicketStorage.activeTicketIssuedAt = null
+                                        }
+
+                                        TicketStorage.message = "Activated ${ot.type.title} — present via NFC"
+                                    }
+                                }) { Text("Activate") }
+                            }
                         }
                     }
                 }
@@ -361,23 +423,6 @@ suspend fun activateTicket(ot: OwnedTicket): String {
         put("signature", Base64.encodeToString(sig, Base64.NO_WRAP))
         put("issuerPub", DemoIssuer.publicKeyBase64())
     }.toString()
-}
-
-fun verifyTokenString(token: String): Boolean {
-    return try {
-        val obj = JSONObject(token)
-        val payloadB = Base64.decode(obj.getString("payload"), Base64.NO_WRAP)
-        val sigB = Base64.decode(obj.getString("signature"), Base64.NO_WRAP)
-        val pubB = Base64.decode(obj.getString("issuerPub"), Base64.NO_WRAP)
-
-        val p = JSONObject(String(payloadB, StandardCharsets.UTF_8))
-        if (System.currentTimeMillis() > p.getLong("validUntil")) return false
-
-        verifyPayload(pubB, payloadB, sigB)
-    } catch (e: Exception) {
-        Log.e("LausanneMock", "verify err", e)
-        false
-    }
 }
 
 fun dateString(ms: Long): String {
