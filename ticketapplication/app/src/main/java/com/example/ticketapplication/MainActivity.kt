@@ -2,24 +2,28 @@ package com.example.ticketapplication
 
 import android.app.Activity
 import android.nfc.NfcAdapter
-import android.nfc.tech.Ndef
-import android.nfc.NdefMessage
-
+import android.nfc.tech.IsoDep
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.Divider
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.AlertDialog
-
 import android.os.Bundle
 import android.util.Base64
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.*
@@ -36,7 +40,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-
+import java.io.IOException
 
 // ------------------- Models -------------------
 data class TicketType(val id: String, val title: String, val durationMinutes: Int, val zones: String)
@@ -146,19 +150,40 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// ------------------- HCE Constants -------------------
+object HceConstants {
+    val SW_OK = byteArrayOf(0x90.toByte(), 0x00.toByte())
+    const val AID = "F222222222"
+
+    fun createSelectAidApdu(aid: String): ByteArray {
+        val aidBytes = aid.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val header = byteArrayOf(0x00, 0xA4.toByte(), 0x04, 0x00)
+        return header + aidBytes.size.toByte() + aidBytes
+    }
+}
+
 @Composable
 fun ScanningScreen(activity: Activity) {
     val nfcAdapter = remember { NfcAdapter.getDefaultAdapter(activity) }
 
     DisposableEffect(Unit) {
         val readerCallback = NfcAdapter.ReaderCallback { tag ->
-            val ndef = Ndef.get(tag)
-            ndef?.let {
-                it.connect()
-                val msg = it.ndefMessage
-                val payload = msg.records.firstOrNull()?.payload
-                payload?.let { bytes ->
-                    val token = String(bytes, StandardCharsets.UTF_8)
+            val isoDep = IsoDep.get(tag)
+            if (isoDep == null) {
+                Log.e("ScanningScreen", "Not an IsoDep tag")
+                return@ReaderCallback
+            }
+
+            try {
+                isoDep.connect()
+                val selectApdu = HceConstants.createSelectAidApdu(HceConstants.AID)
+                val response = isoDep.transceive(selectApdu)
+
+                val responseData = response.copyOfRange(0, response.size - 2)
+                val statusCode = response.copyOfRange(response.size - 2, response.size)
+
+                if (Arrays.equals(statusCode, HceConstants.SW_OK)) {
+                    val token = String(responseData, StandardCharsets.UTF_8)
                     Log.d("LausanneMock", "Scanned token: $token")
                     val verified = verifyTokenString(token)
                     activity.runOnUiThread {
@@ -167,8 +192,26 @@ fun ScanningScreen(activity: Activity) {
                         TicketStorage.scanResult = result
                         TicketStorage.isScanning = false
                     }
+                } else {
+                    Log.e("ScanningScreen", "APDU command failed: ${statusCode.toHex()}")
+                    activity.runOnUiThread {
+                        TicketStorage.scanResult = "FAILED"
+                        TicketStorage.isScanning = false
+                    }
                 }
-                it.close()
+
+            } catch (e: IOException) {
+                Log.e("ScanningScreen", "Error communicating with HCE device", e)
+                activity.runOnUiThread {
+                    TicketStorage.scanResult = "FAILED"
+                    TicketStorage.isScanning = false
+                }
+            } finally {
+                try {
+                    isoDep.close()
+                } catch (e: IOException) {
+                    Log.e("ScanningScreen", "Error closing IsoDep", e)
+                }
             }
         }
 
@@ -176,7 +219,7 @@ fun ScanningScreen(activity: Activity) {
         nfcAdapter?.enableReaderMode(
             activity,
             readerCallback,
-            NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B,
+            NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B or NfcAdapter.FLAG_READER_NFC_F,
             options
         )
 
@@ -335,3 +378,5 @@ fun dateString(ms: Long): String {
     val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     return sdf.format(Date(ms))
 }
+
+fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
