@@ -2,31 +2,24 @@ package com.example.ticketapplication
 
 import android.app.Activity
 import android.nfc.NfcAdapter
-import android.nfc.tech.Ndef
-import android.nfc.NdefMessage
-
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.Divider
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.AlertDialog
-
+import android.nfc.tech.IsoDep
 import android.os.Bundle
 import android.util.Base64
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
 import java.security.*
@@ -37,6 +30,63 @@ import java.util.*
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 
+// Import Firebase
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.android.gms.tasks.Tasks
+
+// ------------------- Firebase Helper -------------------
+object BackendApi {
+    private val db by lazy { FirebaseFirestore.getInstance() }
+
+    fun registerTicketInDb(ticket: OwnedTicket) {
+        // Create a map of data to save
+        val ticketData = hashMapOf(
+            "uid" to ticket.uid,
+            "type" to ticket.type.id,
+            "boughtAt" to ticket.boughtAt,
+            "isValid" to true
+        )
+
+        // Write to collection "tickets" with ID = ticket.uid
+        db.collection("tickets").document(ticket.uid)
+            .set(ticketData)
+            .addOnSuccessListener {
+                Log.d("Firebase", "Ticket successfully written!")
+            }
+            .addOnFailureListener { e ->
+                Log.w("Firebase", "Error writing ticket", e)
+            }
+    }
+
+    fun validateTicketOnline(ticketData: String): Boolean {
+        return try {
+            // 1. Parse the NFC string to find the Ticket ID
+            val obj = JSONObject(ticketData)
+            val payloadBytes = Base64.decode(obj.getString("payload"), Base64.NO_WRAP)
+            val payloadJson = JSONObject(String(payloadBytes, StandardCharsets.UTF_8))
+            val ticketId = payloadJson.getString("ticketId")
+
+            Log.d("Firebase", "Checking database for ID: $ticketId")
+
+            // 2. Ask Firestore for the document synchronously (blocking)
+            // We use Tasks.await because we are already on a background thread (NFC Reader)
+            val docRef = db.collection("tickets").document(ticketId)
+            val snapshot = Tasks.await(docRef.get())
+
+            if (snapshot.exists()) {
+                Log.d("Firebase", "Document found: ${snapshot.data}")
+                // You could also check a field like if(snapshot.getBoolean("isValid") == true)
+                true
+            } else {
+                Log.d("Firebase", "No such document exists")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e("Firebase", "Validation failed", e)
+            false
+        }
+    }
+}
 
 // ------------------- Models -------------------
 data class TicketType(val id: String, val title: String, val durationMinutes: Int, val zones: String)
@@ -67,11 +117,6 @@ object DeviceKeys {
         val cert = ks.getCertificate(ALIAS)
         return Base64.encodeToString(cert.publicKey.encoded, Base64.NO_WRAP)
     }
-
-    fun getPrivate(): PrivateKey {
-        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        return ks.getKey(ALIAS, null) as PrivateKey
-    }
 }
 
 // ------------------- Demo Issuer -------------------
@@ -100,20 +145,6 @@ fun signPayload(privateKey: PrivateKey, payload: ByteArray): ByteArray {
     return sig.sign()
 }
 
-fun verifyPayload(publicKeyBytes: ByteArray, payload: ByteArray, signature: ByteArray): Boolean {
-    return try {
-        val kf = KeyFactory.getInstance("EC")
-        val pkSpec = X509EncodedKeySpec(publicKeyBytes)
-        val pk = kf.generatePublic(pkSpec)
-        val sig = Signature.getInstance("SHA256withECDSA")
-        sig.initVerify(pk)
-        sig.update(payload)
-        sig.verify(signature)
-    } catch (e: Exception) {
-        false
-    }
-}
-
 // ------------------- Storage -------------------
 object TicketStorage {
     val availableTypes = listOf(
@@ -125,165 +156,146 @@ object TicketStorage {
 
     val owned = mutableStateListOf<OwnedTicket>()
     var activeSignedToken: String? by mutableStateOf(null)
-    var message: String by mutableStateOf("Welcome — demo mock ticket app")
-    var isScanning by mutableStateOf(false)
-    var scanResult: String? by mutableStateOf(null)
 }
 
 // ------------------- MainActivity -------------------
 class MainActivity : ComponentActivity() {
 
+    private var nfcAdapter: NfcAdapter? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        nfcAdapter = NfcAdapter.getDefaultAdapter(this)
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    TicketingScreen(this) // Compose UI
+                    TicketingScreen(this)
                 }
             }
         }
     }
-}
 
-@Composable
-fun ScanningScreen(activity: Activity) {
-    val nfcAdapter = remember { NfcAdapter.getDefaultAdapter(activity) }
+    override fun onResume() {
+        super.onResume()
+        nfcAdapter?.let { adapter ->
+            val options = Bundle()
+            // Enable Reader Mode to scan OTHER phones (Controllers)
+            adapter.enableReaderMode(
+                this,
+                { tag ->
+                    // This block runs on a background thread when a tag is found
+                    val isoDep = IsoDep.get(tag)
+                    if (isoDep != null) {
+                        try {
+                            isoDep.connect()
 
-    DisposableEffect(Unit) {
-        val readerCallback = NfcAdapter.ReaderCallback { tag ->
-            val ndef = Ndef.get(tag)
-            ndef?.let {
-                it.connect()
-                val msg = it.ndefMessage
-                val payload = msg.records.firstOrNull()?.payload
-                payload?.let { bytes ->
-                    val token = String(bytes, StandardCharsets.UTF_8)
-                    Log.d("LausanneMock", "Scanned token: $token")
-                    val verified = verifyTokenString(token)
-                    activity.runOnUiThread {
-                        val result = if (verified) "OK" else "FAILED"
-                        TicketStorage.message = "Scanned token: $result"
-                        TicketStorage.scanResult = result
-                        TicketStorage.isScanning = false
+                            // 1. Send SELECT command to custom AID (F0010203040506)
+                            val selectCmd = byteArrayOf(
+                                0x00.toByte(), 0xA4.toByte(), 0x04.toByte(), 0x00.toByte(),
+                                0x07.toByte(),
+                                0xF0.toByte(), 0x01.toByte(), 0x02.toByte(), 0x03.toByte(), 0x04.toByte(), 0x05.toByte(), 0x06.toByte()
+                            )
+                            val response = isoDep.transceive(selectCmd)
+                            val responseStr = String(response, StandardCharsets.UTF_8)
+
+                            Log.d("Controller", "Received from NFC: $responseStr")
+
+                            if (responseStr == "NO_TICKET") {
+                                runOnUiThread { Toast.makeText(this, "No Active Ticket Found", Toast.LENGTH_SHORT).show() }
+                            } else {
+                                // 2. Verify Online using Firebase
+                                val isValid = BackendApi.validateTicketOnline(responseStr)
+
+                                runOnUiThread {
+                                    if (isValid) {
+                                        Toast.makeText(this, "✅ VALID TICKET (Found in Firebase)", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        Toast.makeText(this, "❌ INVALID (Not in DB)", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            }
+                            isoDep.close()
+                        } catch (e: Exception) {
+                            Log.e("Controller", "NFC communication failed", e)
+                            runOnUiThread { Toast.makeText(this, "NFC Error", Toast.LENGTH_SHORT).show() }
+                        }
                     }
-                }
-                it.close()
-            }
-        }
-
-        val options = Bundle()
-        nfcAdapter?.enableReaderMode(
-            activity,
-            readerCallback,
-            NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B,
-            options
-        )
-
-        onDispose {
-            nfcAdapter?.disableReaderMode(activity)
+                },
+                NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK,
+                options
+            )
         }
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text("Waiting to scan...", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(20.dp))
-        CircularProgressIndicator()
-        Spacer(Modifier.height(20.dp))
-        Button(onClick = {
-            TicketStorage.isScanning = false
-            TicketStorage.message = "Scan cancelled."
-        }) {
-            Text("Cancel")
-        }
+    override fun onPause() {
+        super.onPause()
+        nfcAdapter?.disableReaderMode(this)
     }
 }
+
 
 // ------------------- UI -------------------
 @Composable
 fun TicketingScreen(activity: Activity) {
-    if (TicketStorage.isScanning) {
-        ScanningScreen(activity)
-    } else {
-        val scope = rememberCoroutineScope()
-        val types = remember { TicketStorage.availableTypes }
-        val owned = TicketStorage.owned
+    val scope = rememberCoroutineScope()
+    val types = remember { TicketStorage.availableTypes }
+    var message by remember { mutableStateOf("Welcome — Firebase Demo") }
+    val owned = TicketStorage.owned
 
-        if (TicketStorage.scanResult != null) {
-            AlertDialog(
-                onDismissRequest = { TicketStorage.scanResult = null },
-                title = { Text("Scan Result") },
-                text = { Text("Token verification: ${TicketStorage.scanResult}") },
-                confirmButton = {
-                    Button(onClick = { TicketStorage.scanResult = null }) {
-                        Text("Dismiss")
-                    }
-                }
-            )
-        }
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Text("Lausanne Ticket Store", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(12.dp))
 
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            Text("Lausanne Mock Ticket Store", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(12.dp))
-
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                items(types) { t ->
-                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(t.title)
-                                Text(t.zones, style = MaterialTheme.typography.bodySmall)
-                            }
-                            Button(onClick = {
-                                val uid = UUID.randomUUID().toString()
-                                val ot = OwnedTicket(uid, t, System.currentTimeMillis())
-                                owned.add(ot)
-                                TicketStorage.message = "Bought ${t.title} (uid=$uid)"
-                            }) { Text("Buy") }
-                        }
-                    }
-                }
-            }
-
-            Divider()
-            Text("Owned tickets:")
-            Column(modifier = Modifier.fillMaxWidth()) {
-                for (ot in owned) {
-                    Row(modifier = Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        LazyColumn(modifier = Modifier.weight(1f)) {
+            items(types) { t ->
+                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(ot.type.title)
-                            Text("Bought: ${dateString(ot.boughtAt)}", style = MaterialTheme.typography.bodySmall)
+                            Text(t.title)
+                            Text(t.zones, style = MaterialTheme.typography.bodySmall)
                         }
                         Button(onClick = {
-                            scope.launch {
-                                val signed = activateTicket(ot)
-                                TicketStorage.activeSignedToken = signed
-                                TicketStorage.message = "Activated ${ot.type.title} — tap phone to present NFC"
-                            }
-                        }) { Text("Activate") }
+                            val uid = UUID.randomUUID().toString()
+                            val ot = OwnedTicket(uid, t, System.currentTimeMillis())
+                            owned.add(ot)
+                            message = "Buying..."
+
+                            // SAVE TO FIREBASE
+                            BackendApi.registerTicketInDb(ot)
+
+                            message = "Bought ${t.title}"
+                        }) { Text("Buy") }
                     }
                 }
             }
-
-            Spacer(Modifier.height(10.dp))
-            Text(TicketStorage.message)
-            Spacer(Modifier.height(6.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { TicketStorage.message = "Issuer pubkey (base64): ${DemoIssuer.publicKeyBase64()}" }) {
-                    Text("Show issuer pubkey")
-                }
-                Button(onClick = {
-                    TicketStorage.isScanning = true
-                    TicketStorage.message = "Ready to scan another device."
-                }) { Text("Verify active token") }
-            }
-            Spacer(Modifier.height(12.dp))
         }
+
+        Divider()
+        Text("My Wallet:")
+        Column(modifier = Modifier.fillMaxWidth()) {
+            for (ot in owned) {
+                Row(modifier = Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(ot.type.title)
+                        Text(if (ot.isActive) "ACTIVE (Ready to Scan)" else "Inactive",
+                            color = if(ot.isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                    }
+                    Button(onClick = {
+                        scope.launch {
+                            val signed = activateTicket(ot)
+                            TicketStorage.activeSignedToken = signed
+                            ot.isActive = true
+                            // Reset others
+                            owned.forEach { if (it != ot) it.isActive = false }
+                            message = "Activated! Tap this phone to a reader."
+                        }
+                    }, enabled = !ot.isActive) { Text("Activate") }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Text(message)
     }
 }
 
@@ -312,26 +324,4 @@ suspend fun activateTicket(ot: OwnedTicket): String {
         put("signature", Base64.encodeToString(sig, Base64.NO_WRAP))
         put("issuerPub", DemoIssuer.publicKeyBase64())
     }.toString()
-}
-
-fun verifyTokenString(token: String): Boolean {
-    return try {
-        val obj = JSONObject(token)
-        val payloadB = Base64.decode(obj.getString("payload"), Base64.NO_WRAP)
-        val sigB = Base64.decode(obj.getString("signature"), Base64.NO_WRAP)
-        val pubB = Base64.decode(obj.getString("issuerPub"), Base64.NO_WRAP)
-
-        val p = JSONObject(String(payloadB, StandardCharsets.UTF_8))
-        if (System.currentTimeMillis() > p.getLong("validUntil")) return false
-
-        verifyPayload(pubB, payloadB, sigB)
-    } catch (e: Exception) {
-        Log.e("LausanneMock", "verify err", e)
-        false
-    }
-}
-
-fun dateString(ms: Long): String {
-    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-    return sdf.format(Date(ms))
 }
