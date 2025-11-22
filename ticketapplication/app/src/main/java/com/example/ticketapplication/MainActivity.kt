@@ -14,6 +14,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Divider
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 
 import android.os.Bundle
 import android.util.Base64
@@ -128,6 +129,7 @@ object TicketStorage {
     var activeSignedToken: String? by mutableStateOf(null)
     var message: String by mutableStateOf("Welcome — demo mock ticket app")
     var isScanning by mutableStateOf(false)
+    var scanResult: String? by mutableStateOf(null)
 }
 
 // ------------------- MainActivity -------------------
@@ -189,7 +191,9 @@ fun ScanningScreen(activity: Activity) {
                     Log.d("LausanneMock", "Scanned token: $token")
                     val verified = verifyTokenString(token)
                     activity.runOnUiThread {
-                        TicketStorage.message = if (verified) "Scanned token: OK" else "Scanned token: FAILED"
+                        val result = if (verified) "OK" else "FAILED"
+                        TicketStorage.message = "Scanned token: $result"
+                        TicketStorage.scanResult = result
                         TicketStorage.isScanning = false
                     }
                 }
@@ -237,6 +241,19 @@ fun TicketingScreen(activity: Activity) {
         val scope = rememberCoroutineScope()
         val types = remember { TicketStorage.availableTypes }
         val owned = TicketStorage.owned
+
+        if (TicketStorage.scanResult != null) {
+            AlertDialog(
+                onDismissRequest = { TicketStorage.scanResult = null },
+                title = { Text("Scan Result") },
+                text = { Text("Token verification: ${TicketStorage.scanResult}") },
+                confirmButton = {
+                    Button(onClick = { TicketStorage.scanResult = null }) {
+                        Text("Dismiss")
+                    }
+                }
+            )
+        }
 
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Text("Lausanne Mock Ticket Store", style = MaterialTheme.typography.titleLarge)
