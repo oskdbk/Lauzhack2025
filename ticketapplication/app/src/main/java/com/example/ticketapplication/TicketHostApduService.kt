@@ -15,13 +15,27 @@ class TicketHostApduService : HostApduService() {
     override fun processCommandApdu(commandApdu: ByteArray, extras: Bundle?): ByteArray? {
         Log.d(TAG, "processCommandApdu: ${commandApdu.toHex()}")
 
+        // 1. Check if this is the correct APDU
         if (selectAidApdu(commandApdu)) {
-            Log.i(TAG, "Application selected")
-            return TicketStorage.activeSignedToken?.toByteArray()
+            val token = TicketStorage.activeSignedToken
+
+            if (token != null) {
+                Log.i(TAG, "Sending active token")
+                val tokenBytes = token.toByteArray(Charsets.UTF_8)
+
+                // 2. Append 0x90 0x00 (Success Status Word)
+                val successSw = byteArrayOf(0x90.toByte(), 0x00.toByte())
+                return tokenBytes + successSw
+            } else {
+                // Optional: Return "File Not Found" (6A 82) if no ticket is active
+                Log.i(TAG, "No active token found")
+                return byteArrayOf(0x6A.toByte(), 0x82.toByte())
+            }
         }
 
         return null
     }
+
 
     override fun onDeactivated(reason: Int) {
         Log.d(TAG, "onDeactivated: reason = $reason")
