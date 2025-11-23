@@ -428,6 +428,18 @@ fun TicketsScreen(activity: Activity) {
     }
 }
 
+// ------------------- HCE Constants -------------------
+object HceConstants {
+    val SW_OK = byteArrayOf(0x90.toByte(), 0x00.toByte())
+    const val AID = "F222222222"
+
+    fun createSelectAidApdu(aid: String): ByteArray {
+        val aidBytes = aid.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val header = byteArrayOf(0x00, 0xA4.toByte(), 0x04, 0x00)
+        return header + aidBytes.size.toByte() + aidBytes
+    }
+}
+
 @Composable
 fun ScanningScreen(activity: Activity) {
     val nfcAdapter = remember { NfcAdapter.getDefaultAdapter(activity) }

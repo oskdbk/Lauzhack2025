@@ -32,11 +32,30 @@ class TicketHostApduService : HostApduService() {
     }
 
     override fun onDeactivated(reason: Int) {
-        Log.d(TAG, "onDeactivated: reason = $reason")
+        Log.d(TAG, "Deactivated: $reason")
     }
 
-    private fun selectAidApdu(apdu: ByteArray): Boolean {
-        return apdu.size >= 2 && apdu[0] == 0x00.toByte() && apdu[1] == 0xA4.toByte()
+    override fun processCommandApdu(commandApdu: ByteArray, extras: Bundle?): ByteArray {
+        if (commandApdu.toHex().startsWith(SELECT_APDU_HEADER, ignoreCase = true)) {
+            Log.i(TAG, "SELECT APDU received")
+
+            val aidLength = commandApdu[4].toInt()
+            val aidBytes = commandApdu.copyOfRange(5, 5 + aidLength)
+            if (AID == aidBytes.toHex()) {
+                Log.i(TAG, "AID match, sending token")
+                val token = TicketStorage.activeSignedToken
+                return if (token != null) {
+                    val tokenBytes = token.toByteArray(StandardCharsets.UTF_8)
+                    tokenBytes + SW_OK
+                } else {
+                    Log.w(TAG, "No active token available.")
+                    SW_FILE_NOT_FOUND
+                }
+            }
+        }
+
+        Log.w(TAG, "Received unknown APDU: ${commandApdu.toHex()}")
+        return SW_COMMAND_NOT_ALLOWED
     }
 
     private fun ByteArray.toHex(): String {
