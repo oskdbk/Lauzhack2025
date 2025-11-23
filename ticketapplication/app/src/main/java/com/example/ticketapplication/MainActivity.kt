@@ -32,6 +32,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.android.gms.tasks.Tasks
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.IOException
@@ -41,6 +44,8 @@ import java.security.spec.ECGenParameterSpec
 import java.security.spec.X509EncodedKeySpec
 import java.text.SimpleDateFormat
 import java.util.*
+import javax.crypto.Cipher
+import javax.crypto.spec.SecretKeySpec
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 
@@ -49,6 +54,91 @@ val SBB_Red = Color(0xFFEB0000)
 val SBB_Black = Color(0xFF2D327D)
 val SBB_Text = Color(0xFF222222)
 val SBB_Grey = Color(0xFFF2F2F2)
+
+// ------------------- CryptoManager -------------------
+object CryptoManager {
+    private const val SECRET_KEY = "12345678901234567890123456789012"
+    private const val ALGORITHM = "AES"
+
+    fun encrypt(data: String): String {
+        return try {
+            val key = SecretKeySpec(SECRET_KEY.toByteArray(), ALGORITHM)
+            val cipher = Cipher.getInstance(ALGORITHM)
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            val encryptedBytes = cipher.doFinal(data.toByteArray())
+            Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
+        } catch (e: Exception) {
+            Log.e("Crypto", "Encryption error", e)
+            data
+        }
+    }
+}
+
+// ------------------- BackendApi -------------------
+object BackendApi {
+    private val db by lazy { FirebaseFirestore.getInstance() }
+
+    fun registerTicketInDb(ticket: OwnedTicket) {
+        val encryptedDeviceId = CryptoManager.encrypt(ticket.deviceId)
+        val ticketData = hashMapOf(
+            "uid" to ticket.uid,
+            "deviceId" to encryptedDeviceId,
+            "type" to ticket.type.id,
+            "boughtAt" to ticket.boughtAt,
+            "isValid" to false
+        )
+        db.collection("tickets").document(ticket.uid).set(ticketData)
+            .addOnSuccessListener { Log.d("Firebase", "Ticket registered: ${ticket.uid}") }
+    }
+
+    fun updateTicketStatus(ticketUid: String, isValid: Boolean) {
+        db.collection("tickets").document(ticketUid).update("isValid", isValid)
+            .addOnSuccessListener { Log.d("Firebase", "Ticket $ticketUid status updated to: $isValid") }
+    }
+
+    fun validateTicketOnline(token: String, validTypes: List<String>): Boolean {
+        return try {
+            val obj = JSONObject(token)
+            val payloadBytes = Base64.decode(obj.getString("payload"), Base64.NO_WRAP)
+            val payloadJson = JSONObject(String(payloadBytes, StandardCharsets.UTF_8))
+            val rawDeviceId = payloadJson.getString("ticketId")
+            val encryptedIdToSearch = CryptoManager.encrypt(rawDeviceId)
+
+            Log.d("Firebase", "Checking DB for Encrypted Device: $encryptedIdToSearch")
+
+            val query = db.collection("tickets")
+                .whereEqualTo("deviceId", encryptedIdToSearch)
+                .whereEqualTo("isValid", true)
+                .get()
+
+            val snapshot = Tasks.await(query)
+
+            if (snapshot.isEmpty) {
+                Log.d("Firebase", "INVALID: No active tickets found.")
+                return false
+            }
+
+            for (doc in snapshot.documents) {
+                val type = doc.getString("type")
+                if (type != null && validTypes.contains(type)) {
+                    val boughtAt = doc.getLong("boughtAt") ?: 0L
+                    if (System.currentTimeMillis() - boughtAt < 86400000) { // 24h validity
+                        Log.d("Firebase", "VALID: Found matching ticket: $type")
+                        return true
+                    }
+                }
+            }
+
+            Log.d("Firebase", "INVALID: Active ticket found, but wrong zone/type.")
+            return false
+
+        } catch (e: Exception) {
+            Log.e("Firebase", "Validation failed", e)
+            false
+        }
+    }
+}
+
 
 // ------------------- Models -------------------
 data class TicketType(val id: String, val title: String, val durationMinutes: Int, val zones: String, val price: String)
@@ -60,6 +150,11 @@ data class OwnedTicket(
     var isActive: Boolean = false,
     var isUsed: Boolean = false
 )
+
+enum class ValidationMode(val title: String, val allowedTypes: List<String>) {
+    LAUSANNE_AREA("Lausanne Area", listOf("mobilis_1h", "mobilis_24h", "day_pass", "zone_pass")),
+    LAUSANNE_GENEVA("Lausanne ↔ Geneva", listOf("lausanne_geneva", "day_pass"))
+}
 
 // ------------------- Device Keys -------------------
 object DeviceKeys {
@@ -100,7 +195,6 @@ object DemoIssuer {
     fun getKeyPair(): KeyPair {
         if (keyPair == null) {
             val kpg = KeyPairGenerator.getInstance("EC")
-            // Use a fixed seed for deterministic key generation (for demo purposes)
             kpg.initialize(ECGenParameterSpec("secp256r1"), SecureRandom.getInstance("SHA1PRNG").apply {
                 setSeed("lauzhack-2025-sbb-demo-issuer-seed".toByteArray())
             })
@@ -151,6 +245,7 @@ object TicketStorage {
     var isScanning by mutableStateOf(false)
     var scanResult: String? by mutableStateOf(null)
     var showingTickets by mutableStateOf(false)
+    var selectedValidationMode: ValidationMode? by mutableStateOf(null)
 }
 
 // ------------------- HCE Constants -------------------
@@ -229,7 +324,7 @@ fun TicketingScreen(activity: Activity) {
             AlertDialog(
                 onDismissRequest = { TicketStorage.scanResult = null },
                 title = { Text("Scan Result") },
-                text = { Text("Token verification: ${TicketStorage.scanResult}") },
+                text = { Text(TicketStorage.message) },
                 confirmButton = {
                     Button(onClick = { TicketStorage.scanResult = null }) {
                         Text("Dismiss")
@@ -249,6 +344,10 @@ fun TicketingScreen(activity: Activity) {
                             val uniqueTicketId = UUID.randomUUID().toString()
                             val ot = OwnedTicket(uniqueTicketId, deviceId, t, System.currentTimeMillis())
                             TicketStorage.owned.add(ot)
+
+                            // Register with Firebase
+                            BackendApi.registerTicketInDb(ot)
+
                             Toast.makeText(context, "Purchased ${t.title}", Toast.LENGTH_SHORT).show()
                         })
                     }
@@ -303,15 +402,22 @@ fun TicketsScreen(activity: Activity) {
                         onClick = {
                             if (!isExpired) {
                                 scope.launch {
-                                    // Deactivate all other tickets visually
-                                    owned.forEach { it.isActive = false }
-                                    // Activate the selected one
-                                    ot.isActive = true
-                                    // Sign it and load it for HCE
-                                    val signed = activateTicket(ot)
-                                    TicketStorage.activeSignedToken = signed
-                                    TicketStorage.message = "Activated ${ot.type.title}"
-                                    Toast.makeText(activity, "Activated ${ot.type.title}", Toast.LENGTH_SHORT).show()
+                                    val newState = !ot.isActive
+                                    // Update local state
+                                    owned.forEach { it.isActive = false } // Deactivate others
+                                    ot.isActive = newState
+
+                                    // Update Firebase and prepare token
+                                    BackendApi.updateTicketStatus(ot.uid, newState)
+                                    if (newState) {
+                                        val signed = activateTicket(ot)
+                                        TicketStorage.activeSignedToken = signed
+                                        TicketStorage.message = "Activated ${ot.type.title}"
+                                        Toast.makeText(activity, "Activated ${ot.type.title}", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        TicketStorage.activeSignedToken = null
+                                        TicketStorage.message = "Deactivated ${ot.type.title}"
+                                    }
                                 }
                             }
                         }
@@ -350,11 +456,13 @@ fun ScanningScreen(activity: Activity) {
                 if (Arrays.equals(statusCode, HceConstants.SW_OK)) {
                     val token = String(responseData, StandardCharsets.UTF_8)
                     Log.d("ScanningScreen", "Scanned token: $token")
-                    val verified = verifyTokenString(token)
+                    
+                    // Perform both crypto and Firebase validation
+                    val finalResult = verifyTicket(token, TicketStorage.selectedValidationMode?.allowedTypes ?: emptyList())
+
                     activity.runOnUiThread {
-                        val result = if (verified) "OK" else "FAILED"
-                        TicketStorage.message = "Scanned token: $result"
-                        TicketStorage.scanResult = result
+                        TicketStorage.message = finalResult.second
+                        TicketStorage.scanResult = if(finalResult.first) "OK" else "FAILED"
                         TicketStorage.isScanning = false
                     }
                 } else {
@@ -408,6 +516,7 @@ fun ScanningScreen(activity: Activity) {
     }
 }
 
+
 // ------------------- Ticket Helpers -------------------
 suspend fun activateTicket(ot: OwnedTicket): String {
     DeviceKeys.ensureKeys()
@@ -435,29 +544,35 @@ suspend fun activateTicket(ot: OwnedTicket): String {
     }.toString()
 }
 
-fun verifyTokenString(token: String): Boolean {
-    return try {
+fun verifyTicket(token: String, allowedTypes: List<String>): Pair<Boolean, String> {
+    try {
         val obj = JSONObject(token)
         val payloadB = Base64.decode(obj.getString("payload"), Base64.NO_WRAP)
         val sigB = Base64.decode(obj.getString("signature"), Base64.NO_WRAP)
 
-        // FIX: Verify against the one, true, trusted issuer public key, not the one from the token.
         val trustedIssuerPubKey = DemoIssuer.getKeyPair().public.encoded
 
         val p = JSONObject(String(payloadB, StandardCharsets.UTF_8))
         if (System.currentTimeMillis() > p.getLong("validUntil")) {
-            Log.w("verifyTokenString", "Verification failed: Ticket expired")
-            return false
+            return Pair(false, "Verification failed: Ticket expired")
         }
 
-        val isValid = verifyPayload(trustedIssuerPubKey, payloadB, sigB)
-        if (!isValid) {
-            Log.w("verifyTokenString", "Verification failed: Signature invalid")
+        val isCryptoValid = verifyPayload(trustedIssuerPubKey, payloadB, sigB)
+        if (!isCryptoValid) {
+            return Pair(false, "Verification failed: Signature invalid")
         }
-        isValid
+
+        // Crypto is OK, now check Firebase
+        val isBackendValid = BackendApi.validateTicketOnline(token, allowedTypes)
+        return if (isBackendValid) {
+            Pair(true, "Ticket is valid (Crypto + Backend OK)")
+        } else {
+            Pair(false, "Backend validation failed: Ticket not active or invalid type")
+        }
+
     } catch (e: Exception) {
-        Log.e("verifyTokenString", "Verification failed with exception", e)
-        false
+        Log.e("verifyTicket", "Verification failed with exception", e)
+        return Pair(false, "Verification failed: Invalid token format")
     }
 }
 
