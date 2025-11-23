@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AgentMigrationStateService">
+    <option name="pendingSessionIds">
+      <option value="6f94a2b5-bccd-4f5c-bb16-680bd1629d88" />
+    </option>
+    <option name="pendingTurns">
+      <map>
+        <entry key="6f94a2b5-bccd-4f5c-bb16-680bd1629d88">
+          <value>
+            <set>
+              <option value="112b84c7-d14a-4512-854a-4463f9a75f17" />
+              <option value="012066e5-417a-4679-bd43-c19b6d4d4a49" />
+              <option value="4ac08b03-77c3-4ec4-8100-8f633a576a27" />
+              <option value="00bb34a2-1618-4551-95e2-9f733d340ffc" />
+            </set>
+          </value>
+        </entry>
+      </map>
+    </option>
+    <pendingWorkingSetItems>
+      <entry key="6f94a2b5-bccd-4f5c-bb16-680bd1629d88">
+        <set>
+          <option value="file://$PROJECT_DIR$/app/src/main/res/xml/apduservice.xml" />
+          <option value="file://$PROJECT_DIR$/app/src/main/java/com/example/ticketapplication/TicketHostApduService.kt" />
+        </set>
+      </entry>
+    </pendingWorkingSetItems>
+  </component>
+</project>
