@@ -1,7 +1,7 @@
+
 package com.example.ticketapplication
 
 import android.app.Activity
-import android.content.Context
 import android.nfc.NfcAdapter
 import android.nfc.tech.IsoDep
 import android.os.Bundle
@@ -11,7 +11,6 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -21,10 +20,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,128 +31,26 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.nio.charset.StandardCharsets
-import java.security.*
-import java.text.SimpleDateFormat
-import java.util.*
-import javax.crypto.Cipher
-import javax.crypto.spec.SecretKeySpec
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
-
-// Import Firebase
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.android.gms.tasks.Tasks
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+import java.io.IOException
+import java.nio.charset.StandardCharsets
+import java.security.*
+import java.security.spec.ECGenParameterSpec
+import java.security.spec.X509EncodedKeySpec
+import java.text.SimpleDateFormat
+import java.util.*
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 
 // --- SBB Color Palette ---
 val SBB_Red = Color(0xFFEB0000)
 val SBB_Black = Color(0xFF2D327D)
 val SBB_Text = Color(0xFF222222)
 val SBB_Grey = Color(0xFFF2F2F2)
-val SBB_Light_Grey = Color(0xFFE5E5E5)
-
-// ------------------- Encryption Helper -------------------
-object CryptoManager {
-    private const val SECRET_KEY = "12345678901234567890123456789012"
-    private const val ALGORITHM = "AES"
-
-    fun encrypt(data: String): String {
-        return try {
-            val key = SecretKeySpec(SECRET_KEY.toByteArray(), ALGORITHM)
-            val cipher = Cipher.getInstance(ALGORITHM)
-            cipher.init(Cipher.ENCRYPT_MODE, key)
-            val encryptedBytes = cipher.doFinal(data.toByteArray())
-            Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
-        } catch (e: Exception) {
-            Log.e("Crypto", "Encryption error", e)
-            data
-        }
-    }
-}
-
-// ------------------- Firebase Helper -------------------
-object BackendApi {
-    private val db by lazy { FirebaseFirestore.getInstance() }
-
-    fun registerTicketInDb(ticket: OwnedTicket) {
-        val encryptedDeviceId = CryptoManager.encrypt(ticket.deviceId)
-
-        val ticketData = hashMapOf(
-            "uid" to ticket.uid,
-            "deviceId" to encryptedDeviceId,
-            "type" to ticket.type.id,
-            "boughtAt" to ticket.boughtAt,
-            "isValid" to false
-        )
-
-        db.collection("tickets").document(ticket.uid)
-            .set(ticketData)
-            .addOnSuccessListener {
-                Log.d("Firebase", "Ticket registered: ${ticket.uid}")
-            }
-    }
-
-    fun updateTicketStatus(ticketUid: String, isValid: Boolean) {
-        db.collection("tickets").document(ticketUid)
-            .update("isValid", isValid)
-            .addOnSuccessListener {
-                Log.d("Firebase", "Ticket $ticketUid status updated to: $isValid")
-            }
-    }
-
-    fun validateTicketOnline(rawNfcData: String, validTypes: List<String>): Boolean {
-        return try {
-            val obj = JSONObject(rawNfcData)
-            val payloadBytes = Base64.decode(obj.getString("payload"), Base64.NO_WRAP)
-            val payloadJson = JSONObject(String(payloadBytes, StandardCharsets.UTF_8))
-            val rawDeviceId = payloadJson.getString("ticketId")
-
-            val encryptedIdToSearch = CryptoManager.encrypt(rawDeviceId)
-
-            Log.d("Firebase", "Checking DB for Encrypted Device: $encryptedIdToSearch")
-
-            val query = db.collection("tickets")
-                .whereEqualTo("deviceId", encryptedIdToSearch)
-                .whereEqualTo("isValid", true)
-                .get()
-
-            // Use blocking get() call - this is called from IO thread
-            val snapshot = query.result
-
-            if (snapshot.isEmpty) {
-                Log.d("Firebase", "INVALID: No active tickets found.")
-                return false
-            }
-
-            for (doc in snapshot.documents) {
-                val type = doc.getString("type")
-                if (type != null && validTypes.contains(type)) {
-                    val boughtAt = doc.getLong("boughtAt") ?: 0L
-                    if (System.currentTimeMillis() - boughtAt < 86400000) {
-                        Log.d("Firebase", "VALID: Found matching ticket: $type")
-                        return true
-                    }
-                }
-            }
-
-            Log.d("Firebase", "INVALID: Active ticket found, but wrong zone/type.")
-            return false
-
-        } catch (e: Exception) {
-            Log.e("Firebase", "Validation failed", e)
-            false
-        }
-    }
-}
-
-// ------------------- Helper: Get Unique Device ID -------------------
-fun getDeviceId(context: Context): String {
-    return Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
-}
 
 // ------------------- Models -------------------
 data class TicketType(val id: String, val title: String, val durationMinutes: Int, val zones: String, val price: String)
@@ -173,6 +68,78 @@ enum class ValidationMode(val title: String, val allowedTypes: List<String>) {
     LAUSANNE_GENEVA("Lausanne ↔ Geneva", listOf("lausanne_geneva", "day_pass"))
 }
 
+// ------------------- Device Keys -------------------
+object DeviceKeys {
+    private const val ALIAS = "device_key_hybrid"
+
+    fun ensureKeys() {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (!ks.containsAlias(ALIAS)) {
+            val kpg = KeyPairGenerator.getInstance("EC", "AndroidKeyStore")
+            val spec = KeyGenParameterSpec.Builder(
+                ALIAS,
+                KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
+            ).setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                .setDigests(KeyProperties.DIGEST_SHA256)
+                .setUserAuthenticationRequired(false)
+                .build()
+            kpg.initialize(spec)
+            kpg.generateKeyPair()
+        }
+    }
+
+    fun pubKeyBase64(): String {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val cert = ks.getCertificate(ALIAS)
+        return Base64.encodeToString(cert.publicKey.encoded, Base64.NO_WRAP)
+    }
+
+    fun getPrivate(): PrivateKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        return ks.getKey(ALIAS, null) as PrivateKey
+    }
+}
+
+// ------------------- Demo Issuer -------------------
+object DemoIssuer {
+    private var keyPair: KeyPair? = null
+
+    fun getKeyPair(): KeyPair {
+        if (keyPair == null) {
+            val kpg = KeyPairGenerator.getInstance("EC")
+            kpg.initialize(256)
+            keyPair = kpg.generateKeyPair()
+        }
+        return keyPair!!
+    }
+
+    fun publicKeyBase64(): String {
+        return Base64.encodeToString(getKeyPair().public.encoded, Base64.NO_WRAP)
+    }
+}
+
+// ------------------- Crypto Helpers -------------------
+fun signPayload(privateKey: PrivateKey, payload: ByteArray): ByteArray {
+    val sig = Signature.getInstance("SHA256withECDSA")
+    sig.initSign(privateKey)
+    sig.update(payload)
+    return sig.sign()
+}
+
+fun verifyPayload(publicKeyBytes: ByteArray, payload: ByteArray, signature: ByteArray): Boolean {
+    return try {
+        val kf = KeyFactory.getInstance("EC")
+        val pkSpec = X509EncodedKeySpec(publicKeyBytes)
+        val pk = kf.generatePublic(pkSpec)
+        val sig = Signature.getInstance("SHA256withECDSA")
+        sig.initVerify(pk)
+        sig.update(payload)
+        sig.verify(signature)
+    } catch (e: Exception) {
+        false
+    }
+}
+
 // ------------------- Storage -------------------
 object TicketStorage {
     val availableTypes = listOf(
@@ -182,25 +149,31 @@ object TicketStorage {
         TicketType("day_pass", "Day Pass", 1440, "All Zones", "CHF 12.00"),
         TicketType("zone_pass", "Zone Upgrade", 120, "+2 Zones", "CHF 4.20")
     )
-
     val owned = mutableStateListOf<OwnedTicket>()
     var activeSignedToken: String? by mutableStateOf(null)
     var message: String by mutableStateOf("Welcome to SBB Mobile")
     var isScanning by mutableStateOf(false)
     var scanResult: String? by mutableStateOf(null)
-
-    var selectedValidationMode: ValidationMode? by mutableStateOf(null)
     var showingTickets by mutableStateOf(false)
 }
+
+// ------------------- HCE Constants -------------------
+object HceConstants {
+    val SW_OK = byteArrayOf(0x90.toByte(), 0x00.toByte())
+    const val AID = "F222222222"
+
+    fun createSelectAidApdu(aid: String): ByteArray {
+        val aidBytes = aid.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val header = byteArrayOf(0x00, 0xA4.toByte(), 0x04, 0x00)
+        return header + aidBytes.size.toByte() + aidBytes
+    }
+}
+
 
 // ------------------- MainActivity -------------------
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        val deviceId = getDeviceId(this)
-        TicketStorage.activeSignedToken = generateDeviceIdentityToken(deviceId)
-
         setContent {
             MaterialTheme(
                 colorScheme = lightColorScheme(
@@ -217,191 +190,32 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
-    override fun onResume() {
-        super.onResume()
-        val nfcAdapter = NfcAdapter.getDefaultAdapter(this)
-
-        if (nfcAdapter == null) {
-            Toast.makeText(this, "NFC not available on this device", Toast.LENGTH_LONG).show()
-            return
-        }
-
-        if (!nfcAdapter.isEnabled) {
-            Toast.makeText(this, "Please enable NFC in Settings", Toast.LENGTH_LONG).show()
-            return
-        }
-
-        Log.d("NFC", "NFC Adapter ready - Reader mode enabled")
-
-        nfcAdapter.let { adapter ->
-            val options = Bundle()
-            adapter.enableReaderMode(
-                this,
-                { tag ->
-                    if (!TicketStorage.isScanning || TicketStorage.selectedValidationMode == null) {
-                        return@enableReaderMode
-                    }
-
-                    val targetMode = TicketStorage.selectedValidationMode!!
-                    val isoDep = IsoDep.get(tag)
-                    if (isoDep != null) {
-                        try {
-                            isoDep.connect()
-                            Log.d("NFC", "Connected to NFC tag")
-
-                            val selectCmd = byteArrayOf(
-                                0x00.toByte(), 0xA4.toByte(), 0x04.toByte(), 0x00.toByte(),
-                                0x05.toByte(),
-                                0xF2.toByte(), 0x22.toByte(), 0x22.toByte(), 0x22.toByte(), 0x22.toByte()
-                            )
-                            val response = isoDep.transceive(selectCmd)
-                            Log.d("NFC", "Received ${response.size} bytes")
-
-                            val payloadBytes = if (response.size >= 2) {
-                                response.copyOfRange(0, response.size - 2)
-                            } else {
-                                runOnUiThread {
-                                    Toast.makeText(this, "NFC Read Error: Short response", Toast.LENGTH_SHORT).show()
-                                }
-                                return@enableReaderMode
-                            }
-
-                            val token = String(payloadBytes, StandardCharsets.UTF_8)
-                            Log.d("NFC", "Token received: ${token.take(50)}...")
-
-                            if (token == "NO_TICKET") {
-                                runOnUiThread {
-                                    Toast.makeText(this, "No Active Ticket", Toast.LENGTH_SHORT).show()
-                                    TicketStorage.scanResult = "INVALID"
-                                    TicketStorage.message = "No active ticket found ❌"
-                                    TicketStorage.isScanning = false
-                                    TicketStorage.selectedValidationMode = null
-                                }
-                            } else {
-                                val dbValid = BackendApi.validateTicketOnline(token, targetMode.allowedTypes)
-
-                                runOnUiThread {
-                                    if (dbValid) {
-                                        TicketStorage.scanResult = "VALID"
-                                        TicketStorage.message = "Valid for ${targetMode.title} ✅"
-                                    } else {
-                                        TicketStorage.scanResult = "INVALID"
-                                        TicketStorage.message = "Invalid for ${targetMode.title} ❌"
-                                    }
-                                    TicketStorage.isScanning = false
-                                    TicketStorage.selectedValidationMode = null
-                                }
-                            }
-                            isoDep.close()
-                        } catch (e: Exception) {
-                            Log.e("NFC", "NFC Error", e)
-                            runOnUiThread {
-                                Toast.makeText(this, "NFC Error: ${e.message}", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
-                },
-                NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK,
-                options
-            )
-        }
-    }
-
-    override fun onPause() {
-        super.onPause()
-        NfcAdapter.getDefaultAdapter(this)?.disableReaderMode(this)
-    }
 }
 
 // ------------------- UI Components -------------------
-
 @Composable
 fun SBBHeader() {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(SBB_Red)
-            .padding(16.dp)
-    ) {
-        Text(
-            text = "SBB CFF FFS",
-            color = Color.White,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            text = "Mobile Ticket Demo",
-            color = Color.White.copy(alpha = 0.8f),
-            fontSize = 14.sp
-        )
+    Column(modifier = Modifier.fillMaxWidth().background(SBB_Red).padding(16.dp)) {
+        Text("SBB CFF FFS", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text("Mobile Ticket Demo", color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp)
     }
 }
 
 @Composable
-fun TicketCard(
-    title: String,
-    subtitle: String,
-    price: String? = null,
-    buttonText: String,
-    onClick: () -> Unit,
-    isActive: Boolean = false,
-    isUsed: Boolean = false
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .padding(16.dp)
-                .fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
+fun TicketCard(title: String, subtitle: String, price: String? = null, buttonText: String, onClick: () -> Unit, isActive: Boolean = false, isUsed: Boolean = false) {
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp), shape = RoundedCornerShape(8.dp)) {
+        Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = SBB_Text,
-                    fontWeight = FontWeight.Bold
-                )
+                Text(title, style = MaterialTheme.typography.titleMedium, color = SBB_Text, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.Gray
-                )
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 if (price != null) {
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = price,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = SBB_Red,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text(price, style = MaterialTheme.typography.bodyMedium, color = SBB_Red, fontWeight = FontWeight.Bold)
                 }
             }
-
-            Button(
-                onClick = onClick,
-                enabled = !isUsed,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isActive) Color(0xFF4CAF50) else SBB_Red,
-                    disabledContainerColor = Color.Gray
-                ),
-                shape = RoundedCornerShape(20.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-            ) {
-                Text(
-                    text = if (isActive) "Active" else if (isUsed) "Expired" else buttonText,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold
-                )
+            Button(onClick = onClick, enabled = !isUsed, colors = ButtonDefaults.buttonColors(containerColor = if (isActive) Color(0xFF4CAF50) else SBB_Red, disabledContainerColor = Color.Gray), shape = RoundedCornerShape(20.dp), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+                Text(if (isActive) "Active" else if (isUsed) "Expired" else buttonText, color = Color.White, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -410,7 +224,6 @@ fun TicketCard(
 @Composable
 fun TicketingScreen(activity: Activity) {
     val context = LocalContext.current
-
     if (TicketStorage.isScanning) {
         ScanningScreen(activity)
     } else if (TicketStorage.showingTickets) {
@@ -422,112 +235,48 @@ fun TicketingScreen(activity: Activity) {
         if (TicketStorage.scanResult != null) {
             AlertDialog(
                 onDismissRequest = { TicketStorage.scanResult = null },
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = if(TicketStorage.scanResult == "VALID") Icons.Default.CheckCircle else Icons.Default.Close,
-                            contentDescription = null,
-                            tint = if(TicketStorage.scanResult == "VALID") Color(0xFF4CAF50) else SBB_Red
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(if(TicketStorage.scanResult == "VALID") "Valid Ticket" else "Invalid Ticket")
-                    }
-                },
-                text = { Text(TicketStorage.message, fontSize = 16.sp) },
+                title = { Text("Scan Result") },
+                text = { Text("Token verification: ${TicketStorage.scanResult}") },
                 confirmButton = {
-                    TextButton(onClick = { TicketStorage.scanResult = null }) {
-                        Text("OK", color = SBB_Red, fontWeight = FontWeight.Bold)
+                    Button(onClick = { TicketStorage.scanResult = null }) {
+                        Text("Dismiss")
                     }
-                },
-                containerColor = Color.White
+                }
             )
         }
 
         Column(modifier = Modifier.fillMaxSize()) {
             SBBHeader()
-
             Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "Buy Tickets",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = SBB_Text,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
-
+                Text("Buy Tickets", style = MaterialTheme.typography.titleLarge, color = SBB_Text, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
                 LazyColumn(modifier = Modifier.weight(1f)) {
                     items(types) { t ->
-                        TicketCard(
-                            title = t.title,
-                            subtitle = t.zones,
-                            price = t.price,
-                            buttonText = "Buy",
-                            onClick = {
-                                val uid = getDeviceId(context)
-                                val uniqueTicketId = UUID.randomUUID().toString()
-                                val ot = OwnedTicket(uniqueTicketId, uid, t, System.currentTimeMillis())
-                                TicketStorage.owned.add(ot)
-
-                                scope.launch(Dispatchers.IO) {
-                                    BackendApi.registerTicketInDb(ot)
-                                }
-                                TicketStorage.message = "Purchase Successful"
-                                Toast.makeText(context, "Purchased ${t.title}", Toast.LENGTH_SHORT).show()
-                            }
-                        )
+                        TicketCard(title = t.title, subtitle = t.zones, price = t.price, buttonText = "Buy", onClick = {
+                            val deviceId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+                            val uniqueTicketId = UUID.randomUUID().toString()
+                            val ot = OwnedTicket(uniqueTicketId, deviceId, t, System.currentTimeMillis())
+                            TicketStorage.owned.add(ot)
+                            Toast.makeText(context, "Purchased ${t.title}", Toast.LENGTH_SHORT).show()
+                        })
                     }
                 }
-
                 Spacer(modifier = Modifier.height(16.dp))
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = SBB_Black),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
+                Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = SBB_Black), shape = RoundedCornerShape(8.dp)) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         val totalTickets = TicketStorage.owned.size
                         val activeTickets = TicketStorage.owned.count { it.isActive }
-
                         Text("Your Wallet", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "$totalTickets tickets • $activeTickets active",
-                            color = Color.White.copy(alpha = 0.8f)
-                        )
+                        Text("$totalTickets tickets available • $activeTickets active", color = Color.White.copy(alpha = 0.8f))
                     }
                 }
-
                 Spacer(Modifier.height(16.dp))
-
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(
-                        modifier = Modifier.weight(1f).height(56.dp),
-                        onClick = {
-                            TicketStorage.isScanning = true
-                            TicketStorage.message = "Select ticket type to inspect"
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.White),
-                        shape = RoundedCornerShape(8.dp),
-                        elevation = ButtonDefaults.buttonElevation(2.dp)
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = SBB_Red)
-                            Text("Inspector", color = SBB_Red, fontSize = 12.sp)
-                        }
+                    Button(modifier = Modifier.weight(1f).height(56.dp), onClick = { TicketStorage.isScanning = true }, colors = ButtonDefaults.buttonColors(containerColor = Color.White), shape = RoundedCornerShape(8.dp), elevation = ButtonDefaults.buttonElevation(2.dp)) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Default.Search, contentDescription = null, tint = SBB_Red); Text("Inspector", color = SBB_Red, fontSize = 12.sp) }
                     }
-
-                    Button(
-                        modifier = Modifier.weight(1f).height(56.dp),
-                        onClick = { TicketStorage.showingTickets = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = SBB_Red),
-                        shape = RoundedCornerShape(8.dp),
-                        elevation = ButtonDefaults.buttonElevation(2.dp)
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.ShoppingCart, contentDescription = null, tint = Color.White)
-                            Text("My Tickets", color = Color.White, fontSize = 12.sp)
-                        }
+                    Button(modifier = Modifier.weight(1f).height(56.dp), onClick = { TicketStorage.showingTickets = true }, colors = ButtonDefaults.buttonColors(containerColor = SBB_Red), shape = RoundedCornerShape(8.dp), elevation = ButtonDefaults.buttonElevation(2.dp)) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Default.ShoppingCart, contentDescription = null, tint = Color.White); Text("My Tickets", color = Color.White, fontSize = 12.sp) }
                     }
                 }
             }
@@ -539,53 +288,33 @@ fun TicketingScreen(activity: Activity) {
 fun TicketsScreen(activity: Activity) {
     val owned = TicketStorage.owned
     val scope = rememberCoroutineScope()
-
     Column(modifier = Modifier.fillMaxSize().background(SBB_Grey)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.White)
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = { TicketStorage.showingTickets = false }) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = SBB_Red)
-            }
-            Text(
-                text = "My Tickets",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = SBB_Text
-            )
+        Row(modifier = Modifier.fillMaxWidth().background(Color.White).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { TicketStorage.showingTickets = false }) { Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = SBB_Red) }
+            Text("My Tickets", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = SBB_Text)
         }
-
         if (owned.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("No tickets purchased yet.", color = Color.Gray)
             }
         } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp)
-            ) {
+            LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 itemsIndexed(owned) { index, ot ->
-                    val dateStr = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(Date(ot.boughtAt))
                     val isExpired = System.currentTimeMillis() > (ot.boughtAt + ot.type.durationMinutes * 60000L)
-
                     TicketCard(
                         title = ot.type.title,
-                        subtitle = "Purchased: $dateStr\nID: ${ot.uid.take(8)}...",
-                        buttonText = if(isExpired) "Expired" else if (ot.isActive) "Active" else "Activate",
+                        subtitle = "Purchased: ${dateString(ot.boughtAt)}",
+                        buttonText = "Activate",
                         isActive = ot.isActive,
                         isUsed = isExpired,
                         onClick = {
                             if (!isExpired) {
                                 scope.launch {
-                                    val newState = !ot.isActive
-                                    owned[index] = ot.copy(isActive = newState)
-                                    BackendApi.updateTicketStatus(ot.uid, newState)
-                                    TicketStorage.message = if (newState) "Ticket Activated" else "Ticket Deactivated"
+                                    owned.forEach { it.isActive = false }
+                                    ot.isActive = true
+                                    val signed = activateTicket(ot)
+                                    TicketStorage.activeSignedToken = signed
+                                    TicketStorage.message = "Activated ${ot.type.title}"
                                 }
                             }
                         }
@@ -598,113 +327,144 @@ fun TicketsScreen(activity: Activity) {
 
 @Composable
 fun ScanningScreen(activity: Activity) {
-    val modes = ValidationMode.values()
+    val nfcAdapter = remember { NfcAdapter.getDefaultAdapter(activity) }
 
-    Column(modifier = Modifier.fillMaxSize().background(SBB_Grey)) {
-        if (TicketStorage.selectedValidationMode == null) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    "Inspection Mode",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = SBB_Text,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    "Select area to verify:",
-                    modifier = Modifier.padding(vertical = 16.dp),
-                    color = Color.Gray
-                )
+    DisposableEffect(Unit) {
+        val readerCallback = NfcAdapter.ReaderCallback { tag ->
+            val isoDep = IsoDep.get(tag)
+            if (isoDep == null) {
+                Log.e("ScanningScreen", "Not an IsoDep tag")
+                return@ReaderCallback
+            }
 
-                LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(modes) { mode ->
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .clickable { TicketStorage.selectedValidationMode = mode },
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                            shape = RoundedCornerShape(4.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.Search, contentDescription = null, tint = SBB_Red)
-                                Spacer(Modifier.width(16.dp))
-                                Column {
-                                    Text(mode.title, fontWeight = FontWeight.SemiBold)
-                                    Text("Valid for: ${mode.allowedTypes.joinToString(", ")}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                                }
-                            }
-                        }
+            try {
+                isoDep.connect()
+                val selectApdu = HceConstants.createSelectAidApdu(HceConstants.AID)
+                val response = isoDep.transceive(selectApdu)
+
+                val responseData = response.copyOfRange(0, response.size - 2)
+                val statusCode = response.copyOfRange(response.size - 2, response.size)
+
+                if (Arrays.equals(statusCode, HceConstants.SW_OK)) {
+                    val token = String(responseData, StandardCharsets.UTF_8)
+                    Log.d("ScanningScreen", "Scanned token: $token")
+                    val verified = verifyTokenString(token)
+                    activity.runOnUiThread {
+                        val result = if (verified) "OK" else "FAILED"
+                        TicketStorage.message = "Scanned token: $result"
+                        TicketStorage.scanResult = result
+                        TicketStorage.isScanning = false
+                    }
+                } else {
+                    Log.e("ScanningScreen", "APDU command failed: ${statusCode.toHex()}")
+                    activity.runOnUiThread {
+                        TicketStorage.scanResult = "FAILED"
+                        TicketStorage.isScanning = false
                     }
                 }
-                Button(
-                    onClick = { TicketStorage.isScanning = false },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Gray)
-                ) {
-                    Text("Cancel Inspection")
+
+            } catch (e: IOException) {
+                Log.e("ScanningScreen", "Error communicating with HCE device", e)
+                activity.runOnUiThread {
+                    TicketStorage.scanResult = "FAILED"
+                    TicketStorage.isScanning = false
+                }
+            } finally {
+                try {
+                    isoDep.close()
+                } catch (e: IOException) {
+                    Log.e("ScanningScreen", "Error closing IsoDep", e)
                 }
             }
-        } else {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    "Inspecting for",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.Gray
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    TicketStorage.selectedValidationMode!!.title,
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = SBB_Red,
-                    fontWeight = FontWeight.Bold
-                )
+        }
 
-                Spacer(Modifier.height(40.dp))
-                CircularProgressIndicator(
-                    modifier = Modifier.size(80.dp),
-                    color = SBB_Red,
-                    strokeWidth = 6.dp
-                )
-                Spacer(Modifier.height(40.dp))
-                Text(
-                    "Hold scanner near passenger device",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = SBB_Text
-                )
+        val options = Bundle()
+        nfcAdapter?.enableReaderMode(
+            activity,
+            readerCallback,
+            NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK,
+            options
+        )
 
-                Spacer(Modifier.height(60.dp))
-                Button(
-                    onClick = {
-                        TicketStorage.selectedValidationMode = null
-                        TicketStorage.isScanning = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Gray)
-                ) { Text("Cancel") }
-            }
+        onDispose {
+            nfcAdapter?.disableReaderMode(activity)
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("Waiting to scan...", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(20.dp))
+        CircularProgressIndicator(modifier = Modifier.size(64.dp), strokeWidth = 6.dp, color = SBB_Red)
+        Spacer(Modifier.height(20.dp))
+        Button(onClick = {
+            TicketStorage.isScanning = false
+            TicketStorage.message = "Scan cancelled."
+        }) {
+            Text("Cancel")
         }
     }
 }
 
-// ------------------- FIXED: Token Generation -------------------
-fun generateDeviceIdentityToken(deviceId: String): String {
+
+// ------------------- Ticket Helpers -------------------
+suspend fun activateTicket(ot: OwnedTicket): String {
+    DeviceKeys.ensureKeys()
+    val now = System.currentTimeMillis()
+    val validUntil = now + ot.type.durationMinutes * 60L * 1000L
+
     val payload = JSONObject().apply {
-        put("ticketId", deviceId)
-        put("timestamp", System.currentTimeMillis())
+        put("ticketId", ot.uid)
+        put("type", ot.type.id)
+        put("title", ot.type.title)
+        put("zones", ot.type.zones)
+        put("issuedAt", now)
+        put("validUntil", validUntil)
+        put("nonce", UUID.randomUUID().toString())
+        put("devicePub", DeviceKeys.pubKeyBase64())
     }
 
     val payloadBytes = payload.toString().toByteArray(StandardCharsets.UTF_8)
-    val payloadBase64 = Base64.encodeToString(payloadBytes, Base64.NO_WRAP)
+    val sig = signPayload(DemoIssuer.getKeyPair().private, payloadBytes)
 
-    val wrapper = JSONObject().apply {
-        put("payload", payloadBase64)
-    }
-
-    return wrapper.toString()
+    return JSONObject().apply {
+        put("payload", Base64.encodeToString(payloadBytes, Base64.NO_WRAP))
+        put("signature", Base64.encodeToString(sig, Base64.NO_WRAP))
+        put("issuerPub", DemoIssuer.publicKeyBase64())
+    }.toString()
 }
+
+fun verifyTokenString(token: String): Boolean {
+    return try {
+        val obj = JSONObject(token)
+        val payloadB = Base64.decode(obj.getString("payload"), Base64.NO_WRAP)
+        val sigB = Base64.decode(obj.getString("signature"), Base64.NO_WRAP)
+        val pubB = Base64.decode(obj.getString("issuerPub"), Base64.NO_WRAP)
+
+        val p = JSONObject(String(payloadB, StandardCharsets.UTF_8))
+        if (System.currentTimeMillis() > p.getLong("validUntil")) {
+            Log.w("verifyTokenString", "Verification failed: Ticket expired")
+            return false
+        }
+
+        val isValid = verifyPayload(pubB, payloadB, sigB)
+        if (!isValid) {
+            Log.w("verifyTokenString", "Verification failed: Signature invalid")
+        }
+        isValid
+    } catch (e: Exception) {
+        Log.e("verifyTokenString", "Verification failed with exception", e)
+        false
+    }
+}
+
+fun dateString(ms: Long): String {
+    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+    return sdf.format(Date(ms))
+}
+
+fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+
